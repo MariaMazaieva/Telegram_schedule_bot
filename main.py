@@ -29,22 +29,16 @@ async def custom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("This is a custom command!")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global EXCEL_PATH
+    doc = update.message.document
 
-    file = update.message.document
-    if not file or not file.file_name.endswith('.xlsx'):
-        await update.message.reply_text("Please upload a valid .xlsx file.")
+    if not doc.file_name.lower().endswith(".xlsx"):
+        await update.message.reply_text("This is invalid file!")
         return
 
-    new_file = await context.bot.get_file(file.file_id)
-
-    # Save it and update the Excel path
-    download_path = Path("Experimant_bot")
-    download_path.mkdir(exist_ok=True)
-    EXCEL_PATH = download_path / file.file_name  # <--- Update global path
-    await new_file.download_to_drive(custom_path=str(EXCEL_PATH))
-
-    await update.message.reply_text(f"File '{file.file_name}' received and set as active schedule.")
+    file = await context.bot.get_file(doc.file_id)
+    file_name = doc.file_name
+    await file.download_to_drive(custom_path="schedule.xlsx")
+    await update.message.reply_text(f"File '{file_name}' received successfully and is being processed.")
 
 
 # Responses
