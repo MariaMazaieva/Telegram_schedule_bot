@@ -1,32 +1,25 @@
-import os
-from asyncio import Event
-from ics import Calendar, Event
+"""
+A Telegram bot that converts an Excel schedule into an .ics calendar file for a specific person.
+"""
+from pathlib import Path
+from datetime import datetime
+from typing import Final, List, Tuple
 
 import pandas as pd
-from difflib import restore
-from typing import Final
-from pathlib import Path
-from openpyxl import load_workbook
-from openpyxl.worksheet.filters import Filters
-# from pandas.conftest import names
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext, Updater
+from ics import Calendar, Event
+from telegram import Update, InputFile
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-
-from datetime import datetime
-from telegram import InputFile
-from openpyxl import load_workbook
-
-TOKEN: Final = '7979267305:AAEah-yqQWb2rMLAP62ksECyF9Ik0hxR51U'
-BOT_USERNAME: Final = '@Ivans_schedule_bot'
-# TOKEN = os.getenv("TELEGRAM_TOKEN")
-# BOT_USERNAME = "@Ivans_schedule_bot"
+#  Constants
+TOKEN: Final[str] = '7979267305:AAEah-yqQWb2rMLAP62ksECyF9Ik0hxR51U'
+BOT_USERNAME: Final[str] = '@Ivans_schedule_bot'
 EXCEL_PATH: Path = Path("Schedule.xlsx")
 
-# Constants
+#  State Constants for Conversation Handling
 IDLE = "IDLE"
 WAITING_FOR_FILE = "WAITING_FOR_FILE"
 WAITING_FOR_NAME = "WAITING_FOR_NAME"
+
 # Commands
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("state", IDLE)
@@ -47,7 +40,7 @@ def handle_response(text: str) -> str | None:
         return '__CONVERT__'
     return None
 
-# Work with files
+# File and Data Processing
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     state = context.user_data.get("state", IDLE)
@@ -69,27 +62,70 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def create_clean_tuple(file_path: Path, name: str, output_path: Path):
+    """
+     Finds a person's schedule in the Excel file using strict, cell-by-cell matching
+     and returns their assignments for that day.
+
+     Args:
+         file_path: The path to the Excel file.
+         name: The name of the person to search for (case-insensitive).
+
+     Returns:
+         A list of (role, person) tuples for the found row, with the target person's
+         assignment moved to the top. Returns an empty list if the name is not found.
+     """
     df = pd.read_excel(file_path)
     matches = df[df.apply(lambda row: name in str(row.values), axis=1)]
     if matches.empty:
         return []
     first_row = matches.iloc[0]
     first_row = first_row.drop(labels=['Den', 'Datum'], errors='ignore')  # remove if they exist
-    # clean_description = "\n".join(f"{col}: {val}" for col, val in first_row.items() if pd.notna(val))
-    # Turns the row into a list of (role, person) pairs
     assignments = [
         (role, person) for role, person in first_row.items() if pd.notna(person)
     ]
     # moves name to the top
     assignments.sort(key=lambda x: 0 if name in str(x[1]) else 1)
 
-    # Printing test
     description = "\n".join(f"{role}: {person}" for role, person in assignments)
     print(description)
-    # Printing test ends
     return  assignments
 
+def get_all_dates_for_person(file_path: Path, user_name: str) -> list:
+    """
+    Extracts all dates for a specific person from the Excel file using strict matching.
+
+    Args:
+        file_path: The path to the Excel file.
+        user_name: The name of the person to find dates for.
+
+    Returns:
+        A list of datetime objects for the given person.
+    """
+    df = pd.read_excel(file_path)
+
+    # Filter rows where the person appears
+    matches = df[df.apply(lambda row: user_name in str(row.values), axis=1)]
+
+    # Extract just the 'Datum' column
+    dates = matches['Datum'].dropna()
+
+    # Convert to datetime objects
+    clean_dates = pd.to_datetime(dates).tolist()
+    return clean_dates
+    # Also valid just return pd.to_datetime(dates).tolist()
+
 def create_ics_from_excel(file_path: Path, assignments: list, output_path: Path):
+    """
+    Generates an .ics calendar file from a list of assignments and dates.
+
+    Args:
+        assignments: A list of (role, person) tuples.
+        dates: A list of dates for the events.
+        output_path: The path to save the generated .ics file.
+
+    Raises:
+        ValueError: If assignments or dates are empty.
+    """
     calendar = Calendar()
     if not assignments:
         raise ValueError("There is no information for this name")
@@ -121,19 +157,7 @@ def create_ics_from_excel(file_path: Path, assignments: list, output_path: Path)
     print(f"Calendar exported to: {output_path}")
     return
 
-def get_all_dates_for_person(file_path: Path, user_name: str) -> list:
-    df = pd.read_excel(file_path)
 
-    # Filter rows where the person appears
-    matches = df[df.apply(lambda row: user_name in str(row.values), axis=1)]
-
-    # Extract just the 'Datum' column
-    dates = matches['Datum'].dropna()
-
-    # Convert to datetime objects
-    clean_dates = pd.to_datetime(dates).tolist()
-    return clean_dates
-    # Also valid just return pd.to_datetime(dates).tolist()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_type: str = update.message.chat.type
@@ -150,13 +174,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         response: str = handle_response(text)
 
-    # if response == 'Converting':
-    #     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-
     print('Bot: ', response)
-    # await update.message.reply_text(response)
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles incoming text messages and manages the conversation state."""
     text = (update.message.text or "").strip()
     state = context.user_data.get("state", IDLE)
 
@@ -183,10 +204,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("File (Schedule.xlsx) is missing. Send it again please.")
             context.user_data["state"] = WAITING_FOR_FILE
             return
-            # Zpracování jména a generování ICS
         try:
             out_dir = Path("calendar_files")
-            out_path = out_dir / f"{name}__schedule.ics"
+            out_path = out_dir / f"{name}_schedule.ics"
             assignments = create_clean_tuple(EXCEL_PATH, name, out_path)
             create_ics_from_excel(EXCEL_PATH, assignments, out_path)
 
@@ -202,48 +222,34 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Default
     await update.message.reply_text("I didnt catch it. Text „convert file“")
 
-
-async def handle_schedule_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Please enter a name")
-    # name: str = update.message.text
-    name = update.message.text.strip()
-    user_id = update.message.from_user.id
-    print(f"User {user_id} requested schedule for: {name}")
-
-    output_dir = Path("calendar_files")
-    output_dir.mkdir(exist_ok=True)  # Create the folder if it doesn't exist
-    output_path = output_dir / f"{name}__schedule.ics"
-
-    if not EXCEL_PATH.exists():
-        await update.message.reply_text("Excel schedule file not found.")
-
-    clean_description: list = create_clean_tuple(EXCEL_PATH, name, output_path)
-    create_ics_from_excel(EXCEL_PATH, clean_description, output_path)
-    return
-
-async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f'Update {update} caused error {context.error}')
 
 
 
-if __name__ == '__main__':
-    print('Starting bot..')
+# Main Setup
+
+def main() -> None:
+    print('Starting bot...')
     app = Application.builder().token(TOKEN).build()
 
-    # Commands
+    # Add command handlers
     app.add_handler(CommandHandler('start', start_command))
     app.add_handler(CommandHandler('help', help_command))
-    app.add_handler(CommandHandler('custom', custom_command))
 
-    # Messages and files
+    # Add message and file handlers
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT, text_handler))
 
-    # Errors
-    app.add_error_handler(error)
+    # Add the error handler
+    app.add_error_handler(error_handler)
 
-    # Polls the bot
+    # Start polling
     print('Polling...')
-    app.run_polling(poll_interval=3)
+    app.run_polling()
+
+
+if __name__ == '__main__':
+    main()
 
 
