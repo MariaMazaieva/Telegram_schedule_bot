@@ -157,8 +157,6 @@ def create_ics_from_excel(file_path: Path, assignments: list, output_path: Path)
     print(f"Calendar exported to: {output_path}")
     return
 
-
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_type: str = update.message.chat.type
     text: str = update.message.text
@@ -224,8 +222,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f'Update {update} caused error {context.error}')
-
-
 
 # Main Setup
 
