@@ -9,7 +9,7 @@ This bot is built with efficiency, processing all data in-memory without saving 
 *   **Excel to iCal Conversion:** Transforms .xlsx schedules into universal .ics calendar files.
 *   **Personalized Schedules:** Generates a unique calendar for each person specified by the user.
 *   **User Interaction:** Guides the user through the process step-by-step with simple commands.
-*   **Efficient In-Memory Processing:** Handles all file operations in RAM, ensuring high speed and a clean server.
+*   **Efficient Memory Usage:** Handles all file operations in RAM, ensuring high speed and a clean server.
 *   **Deployed on Cloud:** Deployed on Render, with secure handling of API tokens.
 
 ## 🚀 How to Use the Bot
