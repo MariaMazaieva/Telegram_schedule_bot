@@ -1,4 +1,4 @@
-Telegram Schedule Bot - ERIC	
+Telegram Schedule Bot - ERIC.	
 This is a simply lovely Telegram bot that converts a schedule from an .xlsx Excel file into a .ics calendar file. 
 The user uploads a schedule, provides a name, and the bot generates a calendar file containing all the shifts for that specific person. 
 This .ics file can then be easily imported into any calendar application (Google Calendar, Apple Calendar, Outlook, etc.).
