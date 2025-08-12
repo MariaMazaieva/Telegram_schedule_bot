@@ -7,6 +7,7 @@ from typing import Final, List, Tuple
 
 import pandas as pd
 import os
+import io
 from ics import Calendar, Event
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -14,6 +15,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 #  Constants
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+
 if not TOKEN:
     raise ValueError("No TELEGRAM_TOKEN found in environment variables. Please set it before running.")
 
@@ -46,70 +48,48 @@ def handle_response(text: str) -> str | None:
     return None
 
 # File and Data Processing
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    state = context.user_data.get("state", IDLE)
-    if state != WAITING_FOR_FILE:
-        await update.message.reply_text("To get starting send me please „convert file“")
-        return
 
-    if not doc or not doc.file_name.lower().endswith(".xlsx"):
-        await update.message.reply_text("It looks suspicious to me, maybe its not .xlsx type")
-        return
+def create_clean_tuple(excel_bytes: bytes, name: str) -> List[Tuple[str, str]]:
+    """Finds a person's assignments from an in-memory Excel file."""
+    # Used io.BytesIO to read the bytes as if it were a file on disk
+    df = pd.read_excel(io.BytesIO(excel_bytes))
+    name_lower = name.lower()
+    def find_name_in_row(row):
+        for item in row:
+            if isinstance(item, str) and item.lower() == name_lower:
+                return True
+        return False
 
-    file = await context.bot.get_file(doc.file_id)
-    file_name = doc.file_name
-    await file.download_to_drive(custom_path="Schedule.xlsx")
-    context.user_data["state"] = WAITING_FOR_NAME
-    context.user_data["last_file_name"] = file_name
-    await update.message.reply_text(
-        f"File '{file_name}' received successfully. Now send me the name to generate the schedule."
-    )
-
-def create_clean_tuple(file_path: Path, name: str, output_path: Path):
-    """
-     Finds a person's schedule in the Excel file using strict, cell-by-cell matching
-     and returns their assignments for that day.
-
-     Args:
-         file_path: The path to the Excel file.
-         name: The name of the person to search for (case-insensitive).
-
-     Returns:
-         A list of (role, person) tuples for the found row, with the target person's
-         assignment moved to the top. Returns an empty list if the name is not found.
-     """
-    df = pd.read_excel(file_path)
-    matches = df[df.apply(lambda row: name in str(row.values), axis=1)]
+    matches = df[df.apply(find_name_in_row, axis=1)]
     if matches.empty:
         return []
+
     first_row = matches.iloc[0]
     first_row = first_row.drop(labels=['Den', 'Datum'], errors='ignore')  # remove if they exist
     assignments = [
         (role, person) for role, person in first_row.items() if pd.notna(person)
     ]
     # moves name to the top
-    assignments.sort(key=lambda x: 0 if name in str(x[1]) else 1)
+    assignments.sort(key=lambda x: 0 if name_lower == str(x[1]).lower() else 1)
 
-    description = "\n".join(f"{role}: {person}" for role, person in assignments)
-    print(description)
+    # description = "\n".join(f"{role}: {person}" for role, person in assignments)
+    # print(description)
     return  assignments
 
-def get_all_dates_for_person(file_path: Path, user_name: str) -> list:
-    """
-    Extracts all dates for a specific person from the Excel file using strict matching.
-
-    Args:
-        file_path: The path to the Excel file.
-        user_name: The name of the person to find dates for.
-
-    Returns:
-        A list of datetime objects for the given person.
-    """
-    df = pd.read_excel(file_path)
+def get_all_dates_for_person(excel_bytes: bytes, user_name: str) -> List[datetime]:
+    """Extracts all dates for a person from an in-memory Excel file."""
+    df = pd.read_excel(io.BytesIO(excel_bytes))
+    user_name_lower = user_name.lower()
+    def find_user_in_row(row):
+        for item in row:
+            if isinstance(item, str) and item.lower() == user_name_lower:
+                return True
+        return False
 
     # Filter rows where the person appears
-    matches = df[df.apply(lambda row: user_name in str(row.values), axis=1)]
+    matches = df[df.apply(find_user_in_row, axis=1)]
+    if 'Datum' not in matches.columns or matches.empty:
+        return []
 
     # Extract just the 'Datum' column
     dates = matches['Datum'].dropna()
@@ -119,48 +99,27 @@ def get_all_dates_for_person(file_path: Path, user_name: str) -> list:
     return clean_dates
     # Also valid just return pd.to_datetime(dates).tolist()
 
-def create_ics_from_excel(file_path: Path, assignments: list, output_path: Path):
-    """
-    Generates an .ics calendar file from a list of assignments and dates.
-
-    Args:
-        assignments: A list of (role, person) tuples.
-        dates: A list of dates for the events.
-        output_path: The path to save the generated .ics file.
-
-    Raises:
-        ValueError: If assignments or dates are empty.
-    """
-    calendar = Calendar()
+def create_ics_from_data(assignments: list, dates: list) -> str:
+    """Generates an .ics calendar and returns it as a string."""
     if not assignments:
-        raise ValueError("There is no information for this name")
-    user_name: str = assignments[0][1]
-    print(user_name)
-    dates_for_user_name: list = get_all_dates_for_person(file_path, user_name)
-    if not dates_for_user_name:
-        raise ValueError("There is no dates for this name")
+        raise ValueError("No assignment information found for this name.")
+    if not dates:
+        raise ValueError("No dates found for this name.")
 
-    for event_date in dates_for_user_name:
-        # Creates the event
+    calendar = Calendar()
+    user_name = assignments[0][1]
+    description = "\n".join(f"{role}: {person}" for role, person in assignments)
+
+    for event_date in dates:
         event = Event()
         event.name = f"Duty Schedule - {user_name}"
-        event.begin = event_date
-        event.end = event_date
-
-        # Description includes roles and names
-        event.description = "\n".join(
-            f"{role}: {person}" for role, person in assignments
-            if role not in ["Den", "Datum"]
-        )
-
+        event.begin = event_date.date()
+        event.make_all_day()
+        event.description = description
         calendar.events.add(event)
 
-    # output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(str(calendar))
-
-    print(f"Calendar exported to: {output_path}")
-    return
+    # Return the calendar content as a string instead of writing to a file
+    return str(calendar)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_type: str = update.message.chat.type
@@ -178,6 +137,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response: str = handle_response(text)
 
     print('Bot: ', response)
+
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    state = context.user_data.get("state", IDLE)
+
+    if state != WAITING_FOR_FILE:
+        await update.message.reply_text("To get starting send me please „convert file“")
+        return
+
+    if not doc or not doc.file_name.lower().endswith(".xlsx"):
+        await update.message.reply_text("It looks suspicious to me, maybe its not .xlsx type")
+        return
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        # Downloads the file's content into a bytearray in memory
+        excel_bytes = await file.download_as_bytearray()
+
+        # Stores the bytes in user_data 
+        context.user_data['excel_file_bytes'] = excel_bytes
+
+        context.user_data["state"] = WAITING_FOR_NAME
+        await update.message.reply_text(
+            f"File '{doc.file_name}' received successfully. Now send me the name to generate the schedule."
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Sorry, I could not process the file: {e}")
+        print(f"File processing error: {e}")
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles incoming text messages and manages the conversation state."""
@@ -203,29 +189,51 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Send me a name please")
             return
 
-        if not EXCEL_PATH.exists():
-            await update.message.reply_text("File (Schedule.xlsx) is missing. Send it again please.")
+        # Check if the excel file bytes are in memory
+        excel_bytes = context.user_data.get('excel_file_bytes')
+        if not excel_bytes:
+            await update.message.reply_text(
+                "The schedule file is missing. Please send 'convert file' and upload it again.")
             context.user_data["state"] = WAITING_FOR_FILE
             return
+
         try:
-            out_dir = Path("calendar_files")
-            out_path = out_dir / f"{name}_schedule.ics"
-            assignments = create_clean_tuple(EXCEL_PATH, name, out_path)
-            create_ics_from_excel(EXCEL_PATH, assignments, out_path)
+            assignments = create_clean_tuple(excel_bytes, name)
+            if not assignments:
+                await update.message.reply_text(
+                    f"Could not find the name '{name}' in the schedule. Please check the spelling and try again.")
+                return
 
-            await update.message.reply_document(InputFile(str(out_path)), filename=out_path.name)
-            await update.message.reply_text("Ready :)")
-            context.user_data["state"] = IDLE
-            context.user_data.pop("last_file_name", None)
+            user_name = assignments[0][1]
+            dates = get_all_dates_for_person(excel_bytes, user_name)
 
+            # Generate the calendar content as a string
+            calendar_string = create_ics_from_data(assignments, dates)
+
+            # Encode the string to bytes for sending
+            calendar_bytes = calendar_string.encode('utf-8')
+            output_filename = f"{name.replace(' ', '_')}_schedule.ics"
+
+            # Send the in-memory bytes as a document
+            await update.message.reply_document(document=calendar_bytes, filename=output_filename)
+            await update.message.reply_text("Here is your calendar! To create another, send 'convert file' again.")
+
+        except ValueError as e:
+            await update.message.reply_text(f"Could not create the calendar: {e}")
         except Exception as e:
-            await update.message.reply_text(f"Couldnt create a calendar: {e}")
+            await update.message.reply_text(f"An unexpected error occurred. Please contact the administrator.")
+            print(f"Error during calendar generation for name '{name}': {e}")
+        finally:
+            # IMPORTANT: Clean up user_data to free memory and reset state
+            context.user_data.clear()
+            context.user_data["state"] = IDLE
         return
 
     # Default
     await update.message.reply_text("I didnt catch it. Text „convert file“")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f'Update {update} caused error {context.error}')
 
 # Main Setup
