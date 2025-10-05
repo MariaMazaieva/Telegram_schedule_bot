@@ -4,6 +4,8 @@ A Telegram bot that converts an Excel schedule into an .ics calendar file for a 
 from pathlib import Path
 from datetime import datetime
 from typing import Final, List, Tuple
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import os
@@ -77,30 +79,57 @@ def create_clean_tuple(excel_bytes: bytes, name: str) -> List[Tuple[str, str]]:
     return  assignments
 
 def get_all_dates_for_person(excel_bytes: bytes, user_name: str) -> List[datetime]:
-    """Extracts all dates for a person from an in-memory Excel file."""
     df = pd.read_excel(io.BytesIO(excel_bytes))
     user_name_lower = user_name.lower()
+
     def find_user_in_row(row):
         for item in row:
             if isinstance(item, str) and item.lower() == user_name_lower:
                 return True
         return False
 
-    # Filter rows where the person appears
     matches = df[df.apply(find_user_in_row, axis=1)]
     if 'Datum' not in matches.columns or matches.empty:
         return []
 
-    # Extract just the 'Datum' column
-    dates = matches['Datum'].dropna()
+    dates = pd.to_datetime(matches['Datum'].dropna())
+    # normalize to date (midnight) and drop duplicates, then sort
+    dates = dates.dt.normalize().drop_duplicates().sort_values()
+    return dates.tolist()
 
-    # Convert to datetime objects
-    clean_dates = pd.to_datetime(dates).tolist()
-    return clean_dates
     # Also valid just return pd.to_datetime(dates).tolist()
+def compute_shift_bounds(day: datetime, tz: str = "Europe/Prague") -> Tuple[datetime, datetime]:
+    """
+    Given a date (datetime/Timestamp), return (begin, end) datetimes with tzinfo,
+    following the shift rules:
+      Mon-Thu: 15:30 -> 07:00 next day
+      Fri:     14:30 -> 07:00 next day
+      Sat-Sun: 07:00 -> 07:00 next day
+    """
+    if not isinstance(day, datetime):
+        # pandas may pass Timestamp or date; normalize to datetime
+        day = pd.to_datetime(day).to_pydatetime()
+
+    wd = day.weekday()  # Mon=0 ... Sun=6
+    tzinfo = ZoneInfo(tz)
+    d = day.date()
+
+    if wd in (0, 1, 2, 3):          # Mon-Thu
+        start_t = time(15, 30)
+        end_t = time(7, 0)
+    elif wd == 4:                   # Fri
+        start_t = time(14, 30)
+        end_t = time(7, 0)
+    else:                           # Sat-Sun
+        start_t = time(7, 0)
+        end_t = time(7, 0)
+
+    begin = datetime.combine(d, start_t, tzinfo)
+    end = datetime.combine(d + timedelta(days=1), end_t, tzinfo)
+    return begin, end
 
 def create_ics_from_data(assignments: list, dates: list) -> str:
-    """Generates an .ics calendar and returns it as a string."""
+    """Generates an .ics calendar (as string) with correct shift times by weekday."""
     if not assignments:
         raise ValueError("No assignment information found for this name.")
     if not dates:
@@ -108,18 +137,21 @@ def create_ics_from_data(assignments: list, dates: list) -> str:
 
     calendar = Calendar()
     user_name = assignments[0][1]
+    # Keep the role breakdown in the description
     description = "\n".join(f"{role}: {person}" for role, person in assignments)
 
     for event_date in dates:
+        begin, end = compute_shift_bounds(event_date, tz="Europe/Prague")
+
         event = Event()
-        event.name = f"Duty Schedule - {user_name}"
-        event.begin = event_date.date()
-        event.make_all_day()
+        event.name = f"Служба — {user_name}"
+        event.begin = begin      # timezone-aware datetime
+        event.end = end          # timezone-aware datetime
         event.description = description
         calendar.events.add(event)
 
-    # Return the calendar content as a string instead of writing to a file
     return str(calendar)
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_type: str = update.message.chat.type
@@ -154,7 +186,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Downloads the file's content into a bytearray in memory
         excel_bytes = await file.download_as_bytearray()
 
-        # Stores the bytes in user_data 
+        # Stores the bytes in user_data
         context.user_data['excel_file_bytes'] = excel_bytes
 
         context.user_data["state"] = WAITING_FOR_NAME
