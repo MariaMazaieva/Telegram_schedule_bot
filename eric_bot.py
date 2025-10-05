@@ -144,7 +144,7 @@ def create_ics_from_data(assignments: list, dates: list) -> str:
         begin, end = compute_shift_bounds(event_date, tz="Europe/Prague")
 
         event = Event()
-        event.name = f"Служба — {user_name}"
+        event.name = f"Shift — {user_name}"
         event.begin = begin      # timezone-aware datetime
         event.end = end          # timezone-aware datetime
         event.description = description
